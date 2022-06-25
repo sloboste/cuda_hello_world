@@ -1,5 +1,4 @@
 // Toy program to exercise gpu offloading.
-// https://cuda-tutorial.readthedocs.io/en/latest/tutorials/tutorial01/
 // https://developer.nvidia.com/blog/cuda-refresher-cuda-programming-model/
 // https://docs.nvidia.com/cuda/cuda-runtime-api/
 
@@ -13,7 +12,10 @@
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 
-#define N 10000000
+#define TOTAL_SIZE (1 << 30)
+#define THREADS_PER_BLOCK 256
+#define NUM_BLOCKS ((TOTAL_SIZE + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK)
+
 #define MAX_ERR 1e-6
 
 #define STRINGIFY(x) #x
@@ -34,37 +36,30 @@ void on_cuda_error_(cudaError_t error, const char *call) {
 }
 
 __global__ void vector_add(float *out, float *a, float *b, int n) {
-    for (int i = 0; i < n; i++) {
-        out[i] = a[i] + b[i];
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n) {
+        return;;
     }
+    out[tid] = a[tid] + b[tid];
 }
 
 void do_gpu_stuff() {
-    float *a = (float*)malloc(sizeof(*a) * N);
-    float *b = (float*)malloc(sizeof(*b) * N);
-    float *out = (float*)malloc(sizeof(*out) * N);
+    size_t mem_size = sizeof(float) * TOTAL_SIZE;
+    float *a, *b, *out;
+    cuda_try(cudaMallocManaged(&a, mem_size));
+    cuda_try(cudaMallocManaged(&b, mem_size));
+    cuda_try(cudaMallocManaged(&out, mem_size));
 
-    for (int i = 0; i < N; ++i) {
+    for (int i = 0; i < TOTAL_SIZE; ++i) {
         a[i] = 1.0f;
         b[i] = 2.0f;
     }
-    memset(out, 0, sizeof(*out) * N);
+    memset(out, 0, mem_size);
 
-    float *gpu_a;
-    float *gpu_b;
-    float *gpu_out;
-    cuda_try(cudaMalloc((void**)&gpu_a, sizeof(*gpu_a) * N));
-    cuda_try(cudaMalloc((void**)&gpu_b, sizeof(*gpu_b) * N));
-    cuda_try(cudaMalloc((void**)&gpu_out, sizeof(*gpu_out) * N));
+    vector_add<<<NUM_BLOCKS,THREADS_PER_BLOCK>>>(out, a, b, TOTAL_SIZE);
+    cuda_try(cudaDeviceSynchronize());
 
-    cuda_try(cudaMemcpy(gpu_a, a, sizeof(*a) * N, cudaMemcpyHostToDevice));
-    cuda_try(cudaMemcpy(gpu_b, b, sizeof(*b) * N, cudaMemcpyHostToDevice));
-
-    vector_add<<<1,1>>>(gpu_out, gpu_a, gpu_b, N);
-
-    cuda_try(cudaMemcpy(out, gpu_out, sizeof(*out) * N, cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < N; ++i) {
+    for (int i = 0; i < TOTAL_SIZE; ++i) {
         if (fabs(out[i] - a[i] - b[i]) >= MAX_ERR) {
             fprintf(
                 stderr,
@@ -79,16 +74,7 @@ void do_gpu_stuff() {
             assert(fabs(out[i] - a[i] - b[i]) < MAX_ERR);
         }
     }
-    fprintf(stderr, "out[0] = %f\n", out[0]);
     fprintf(stderr, "PASSED\n");
-
-    free(a);
-    free(b);
-    free(out);
-
-    cuda_try(cudaFree(gpu_a));
-    cuda_try(cudaFree(gpu_b));
-    cuda_try(cudaFree(gpu_out));
 }
 
 void print_gpu_properties(cudaDeviceProp *p) {
